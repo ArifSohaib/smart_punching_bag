@@ -1,6 +1,7 @@
 import llm_tools.sql_tools
 from sqlalchemy import text
 from langchain_community.utilities import SQLDatabase
+from langchain_community.tools import QuerySQLDatabaseTool
 from pathlib import Path 
 
 
@@ -28,12 +29,7 @@ def test_query_generation(file_path:str, question:str):
         file_path (str): path to the parquet file 
         question (str): natural language question to generate SQL for
     """
-    query = llm_tools.sql_tools.generate_query_with_ollama(str(file_path), question)
-    print(f"Generated Query:\n{query}")
-    _ , engine = llm_tools.sql_tools.get_sql_connection(file_path)
-    db = SQLDatabase(engine=engine)
-    result = db.run(query)
-    print("generated query results:")
+    result = llm_tools.sql_tools.run_query_with_ollama(str(file_path), question)
     print(result)
 
 

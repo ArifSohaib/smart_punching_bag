@@ -43,7 +43,7 @@ def query_parquet_with_sql(file_path:str, query:str):
     connection.close()
     return results
 
-def generate_query_with_ollama(file_path:str, question:str):
+def run_query_with_ollama(file_path:str, question:str):
     """
     Uses Ollama and QuerySQLDatabaseTool to generate a SQL query based on the user's natural language question.
     Args:
@@ -75,22 +75,12 @@ def generate_query_with_ollama(file_path:str, question:str):
     clean_sql_prompt = ChatPromptTemplate.from_template(clean_sql_prompt_template)
     clean_sql_chain = clean_sql_prompt | llm
     full_sql_gen_chain = sql_query_gen_chain | clean_sql_chain |  StrOutputParser()
-    response = full_sql_gen_chain.invoke(
-        {"question": question})
+
+    sql_query_exec_chain = QuerySQLDatabaseTool(db=db)
+    sql_query_gen_and_exec_chain = full_sql_gen_chain | sql_query_exec_chain | StrOutputParser()
+    response = sql_query_gen_and_exec_chain.invoke({"question":question})
 
     return response
 
-
-if __name__ == "__main__":
-    parquet_file = Path("data", "raw_punches.parquet")
-    if not parquet_file.exists():
-        print(f"Parquet file not found at {parquet_file}. Please run a workout session to generate data.")
-    query = generate_query_with_ollama(str(parquet_file), "What is the average punch speed?")
-    print(f"Generated Query:\n{query}")
-    _ , engine = get_sql_connection(parquet_file)
-    db = SQLDatabase(engine=engine)
-    result = db.run(query)
-    print("generated query results:")
-    print(result)
 
         
