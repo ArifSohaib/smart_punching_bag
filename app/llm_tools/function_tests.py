@@ -36,8 +36,13 @@ def test_query_generation(file_path:str, question:str):
 if __name__ == "__main__":
     parquet_file = Path("data", "raw_punches.parquet")
     if not parquet_file.exists():
-        Exception(f"Parquet file not found at {parquet_file}. Please run a workout session to generate data.")
+        raise Exception(f"Parquet file not found at {parquet_file}. Please run a workout session to generate data.")
     test_sql_connection(str(parquet_file))
-    test_query_generation(str(parquet_file), "What are the average punch magnitudes for each session?")
 
-    
+    questions = []
+    questions.append("What are the average punch magnitudes for each session?")
+    questions.append("How many punches were thrown in each session?")
+    questions.append("Calculate the change in magnitude (gradient) of each punch and store it in a column called delta_magnitude")
+
+    for question in questions:
+        test_query_generation(str(parquet_file), question)
