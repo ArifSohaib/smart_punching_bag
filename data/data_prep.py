@@ -20,11 +20,21 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver 
 import re 
+import shutil 
+
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(filename)s: %(message)s")
 
 logger = logging.getLogger(__name__)
+chroma_path = Path.cwd()
+chroma_file = "chroma_db"
+#delete previous version
+
+chroma_db_path = Path(chroma_path, chroma_file)
+if chroma_db_path.exists():
+    logger.warning(f"{chroma_db_path} exists - deleting before re-ingest")
+    shutil.rmtree(chroma_db_path)
 
 
 ### Data Loading ### 
@@ -33,7 +43,7 @@ if not images_dir.exists():
     images_dir.mkdir(parents=True)
 
 pdf_dir = Path(Path.cwd(),"papers_and_books")
-chroma_path = Path.cwd()
+
 gemma_model = "gemma4:e4b" 
 documents_to_embed:List[Document] = []
 
@@ -264,5 +274,5 @@ embeddings = OllamaEmbeddings(model='embeddinggemma:300m')
 vector_store = Chroma.from_documents(
     documents=documents_to_embed,
     embedding=embeddings,
-    persist_directory=str(chroma_path / "chroma_db2")
+    persist_directory=str(chroma_db_path)
 )
