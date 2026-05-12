@@ -19,12 +19,14 @@ logging.basicConfig(level=logging.INFO,
 
 logger = logging.getLogger(__name__)
 chroma_path = Path.cwd()
+chroma_file = "chroma_db"
+chroma_db_path = Path(chroma_path, chroma_file)
 gemma_model = "gemma4:e4b" 
 llm = ChatOllama(model=gemma_model)
 
 embeddings = OllamaEmbeddings(model='embeddinggemma:300m')
 vector_store = Chroma(
-    persist_directory=str(chroma_path / "chroma_db2"),
+    persist_directory=str(chroma_db_path),
     embedding_function=embeddings
 )
 @tool
