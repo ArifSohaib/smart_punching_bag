@@ -1,4 +1,4 @@
-
+import pymupdf.layout
 import pymupdf4llm
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -21,15 +21,25 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 chroma_path = Path.cwd()
 chroma_file = "chroma_db"
-#delete previous version
+
 
 chroma_db_path = Path(chroma_path, chroma_file)
 if chroma_db_path.exists():
     logger.warning(f"{chroma_db_path} exists - deleting before re-ingest")
     shutil.rmtree(chroma_db_path)
 
+embeddings = OllamaEmbeddings(model='embeddinggemma:300m')
+vector_store = Chroma(
+    embedding_function=embeddings,
+    persist_directory=str(chroma_db_path),
+)
+BATCH_SIZE = 64
 
-### Data Loading ### 
+def flush(buffer: list[Document]):
+    if buffer:
+        vector_store.add_documents(buffer)
+        buffer.clear()
+
 images_dir = Path(Path.cwd(), "extracted_images")
 if not images_dir.exists():
     images_dir.mkdir(parents=True)
@@ -37,7 +47,6 @@ if not images_dir.exists():
 pdf_dir = Path(Path.cwd(),"papers_and_books")
 
 gemma_model = "gemma4:e4b" 
-documents_to_embed:List[Document] = []
 
 pdf_files = glob.glob(f"{pdf_dir}/*.pdf")
 
@@ -162,22 +171,24 @@ def process_document(
     doc_path: Path,
     text_splitter: RecursiveCharacterTextSplitter,
     image_path: Path,
-    documents_to_embed: list[Document],
-):
+    vector_store: Chroma,
+    batch_size: int = 64):
+
     doc_name = doc_path.stem
     page_chunks = pymupdf4llm.to_markdown(
-        doc_path,
+        str(doc_path),
         page_chunks=True,
         write_images=True,
         image_format="jpeg",
-        image_path=image_path,
+        image_path=str(image_path),
     )
 
     # Header state persists across pages
     current_headers = {"h1": "", "h2": "", "h3": ""}
+    buffer: list[Document] = []
 
     for page_data in page_chunks:
-        page_num = page_data["metadata"]["page"]
+        page_num = page_data["metadata"]["page_number"]
         page_id = f"{doc_name}_p{page_num}"
         page_text = page_data["text"]
 
@@ -194,21 +205,18 @@ def process_document(
         formula_docs, cleaned_text = extract_formula_chunks(
             page_text, doc_name, page_num, page_id
         )
-        documents_to_embed.extend(formula_docs)
+        buffer.extend(formula_docs)
 
         # Pass current_headers in — it gets mutated in place as new headers are found
         sections = split_by_headers(cleaned_text, current_headers)
 
         for section in sections:
-            header_key = slugify(
-                section["h2"] or section["h1"] or f"p{page_num}"
-            )
+            header_key = slugify(section["h2"] or section["h1"] or f"p{page_num}")
             section_id = f"{doc_name}_{header_key}"
-            chunks = text_splitter.split_text(section["text"])
-            for chunk in chunks:
+            for chunk in text_splitter.split_text(section["text"]):
                 if not chunk.strip():
                     continue
-                documents_to_embed.append(Document(
+                buffer.append(Document(
                     page_content=chunk,
                     metadata={
                         "type": "text",
@@ -222,49 +230,48 @@ def process_document(
                         "section_h3": section["h3"],
                     }
                 ))
-                logger.info(f'current embedding list size {len(documents_to_embed)}')
+        if len(buffer) >= batch_size:
+            vector_store.add_documents(buffer)
+            buffer.clear()
+    if buffer:
+        vector_store.add_documents(buffer)
 
-def add_images(image_path:Path, documents_to_embed:List[Document]):
+def add_images(image_path: Path, vector_store: Chroma, batch_size: int = 16):
     image_files = list(image_path.glob("*.jpeg"))
+    buffer: list[Document] = []
     for img_path in tqdm(image_files):
-        img_path = str(img_path.absolute())
+        img_path_str = str(img_path.absolute())
         try:
-            # Prompting Gemma to analyze the image content
             response = ollama.chat(
                 model=gemma_model,
                 messages=[{
                     'role': 'user',
                     'content': 'Describe this scientific image or figure in detail. What is it showing?',
-                    'images': [img_path]
+                    'images': [img_path_str]
                 }]
             )
             summary = response['message']['content']
-            source_file, page_no, image_no = get_img_page_and_no(img_path)
-            # Package into a structured document
-            documents_to_embed.append(Document(
+            source_file, page_no, image_no = get_img_page_and_no(img_path_str)
+            buffer.append(Document(
                 page_content=f"Image Summary: {summary}",
                 metadata={
-                    "type": "image", 
-                    "source_path": img_path,
+                    "type": "image",
+                    "source_path": img_path_str,
                     "document": source_file,
                     "page_no": page_no,
                     "image_no": image_no,
-                    "parent_id":f"{source_file}_p{page_no}"
+                    "parent_id": f"{source_file}_p{page_no}"
                 }
             ))
+            if len(buffer) >= batch_size:
+                vector_store.add_documents(buffer)
+                buffer.clear()
         except Exception as e:
-            logger.error(f"Error processing image {img_path}: {e}")
+            logger.error(f"Error processing image {img_path_str}: {e}")
+    if buffer:
+        vector_store.add_documents(buffer)
 
 
 for document in pdf_dir.glob("*.pdf"):
-    process_document(document, text_splitter, images_dir, documents_to_embed)
-logger.info(f"found {len(documents_to_embed)} documents for text")
-add_images(images_dir, documents_to_embed)
-logger.info(f"after adding images {len(documents_to_embed)}")
-
-embeddings = OllamaEmbeddings(model='embeddinggemma:300m')
-vector_store = Chroma.from_documents(
-    documents=documents_to_embed,
-    embedding=embeddings,
-    persist_directory=str(chroma_db_path)
-)
+    process_document(document, text_splitter, images_dir, vector_store)
+add_images(images_dir, vector_store)
