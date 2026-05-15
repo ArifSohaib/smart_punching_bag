@@ -6,17 +6,19 @@ from pix2tex.cli import LatexOCR
 from PIL import Image
 import re
 from langchain_ollama import ChatOllama
-import json 
 import logging 
 from typing import List, Optional, Literal
 from typing_extensions import TypedDict
 
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s - %(levelname)s - %(name)s - %(filename)s: %(message)s")
-
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
+ch = logging.StreamHandler()
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(filename)s: %(message)s")
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+logger.propagate = False 
 
 class Variable(TypedDict):
     symbol: str 
@@ -94,7 +96,7 @@ def get_text_siblings(img_meta:dict, vector_store:Chroma):
     img_doc = Path(img_meta['document']).stem
     img_doc = img_doc.replace(' ','-')
 
-    print(f"{img_page=}, {img_doc=}")
+    logger.info(f"{img_page=}, {img_doc=}")
     results = vector_store.get(where={"$and":[
         # {"document":{"$eq":img_doc}}, 
         {"page_no":{"$eq":img_page}},
@@ -168,19 +170,19 @@ if __name__ == "__main__":
     for img in sample_images:
         logger.warning(f"processing {img.name}")
         record = get_image_record(img)
-        print(f"\n{'='*70}")
-        print(f"Image: {record.get('img_path',None)}")
-        print(f"Parent ID: {record.get('parent_id',None)}")
-        print(f"\nLaTeX: {record.get('latex',None)}")
-        print(f"Degenerate: {record.get('latex_degenerate',None)}")
-        print(f"\nImage Summary (Layer 1):\n  {record.get('image_summary',None)}")
+        logger.info(f"\n{'='*70}")
+        logger.info(f"Image: {record.get('img_path',None)}")
+        logger.info(f"Parent ID: {record.get('parent_id',None)}")
+        logger.info(f"\nLaTeX: {record.get('latex',None)}")
+        logger.info(f"Degenerate: {record.get('latex_degenerate',None)}")
+        logger.info(f"\nImage Summary (Layer 1):\n  {record.get('image_summary',None)}")
         logger.warning(f"\nText Siblings ({len(record.get('text_siblings', []))} chunks):")
         for sib in record.get('text_siblings', []):
-            print(sib)
+            logger.info(sib)
         latex = record.get('latex',None)
         text_siblings = record.get("text_siblings",[])
         if latex != None and len(text_siblings) != 0:
             annotated_result = annotate_equation(latex, text_siblings)
-            print(f"{annotated_result=}")
+            logger.info(f"{annotated_result=}")
         else:
-            print(f"no latex or text_sibling found, skipping for img {img.stem}")
+            logger.info(f"no latex or text_sibling found, skipping for img {img.stem}")
