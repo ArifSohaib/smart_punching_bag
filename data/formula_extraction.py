@@ -9,7 +9,7 @@ from langchain_ollama import ChatOllama
 import logging 
 from typing import List, Optional, Literal
 from typing_extensions import TypedDict
-
+from datetime import datetime 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -122,25 +122,42 @@ def get_image_record(img_path: Path) -> dict:
     img_meta = img_results["metadatas"][0]
     img_summary = img_results["documents"][0]
     parent_id = img_meta.get("parent_id")
+    img_page = int(img_meta.get('page_no',None))
+    if img_page == None:
+        logger.error(f"image page not found {img_meta=}")
+        
     
     # 3. Pull text siblings — chunks with the same parent_id (same page)
     text_siblings = vector_store.get(
         where={
             "$and": [
-                {"parent_id": {"$eq": parent_id}},
+                {"page_no": {"$eq": img_page}},
                 {"type": {"$eq": "text"}}
             ]
         },
         include=["documents", "metadatas"]
     )
     
+    text_section = vector_store.get(where={"$and":[{"section_h1":{"$eq":text_siblings['metadatas'][0]['section_h1']}},
+                                                  {"section_h2":{"$eq":text_siblings['metadatas'][0]['section_h2']}},
+                                                  {"section_h3":{'$eq':text_siblings['metadatas'][0]['section_h3']}},
+                                                  {"type": {"$eq": "text"}},
+                                                  {"page_no": {"$eq": img_page-1}},
+                                                  {"page_no": {"$eq": img_page}},
+                                                  {"page_no": {"$eq": img_page+1}},
+                                                  ]},
+                                                  include=['documents','metadatas'])
+    text_siblings = list(zip(text_siblings['documents'], text_siblings['metadatas']))
+    logging.info("*"*10)
+    logging.info(f"{text_section=}")
+    logging.info("*"*10)
     return {
         "img_path": img_path.name,
         "parent_id": parent_id,
         "latex": cleaned,
         "latex_degenerate": degenerate,
         "image_summary": img_summary[:400],
-        "text_siblings": get_text_siblings(img_meta,vector_store)
+        "text_siblings": text_siblings
     }
 
 def clean_text_for_annotation(text: str) -> str:
@@ -163,26 +180,119 @@ def annotate_equation(latex: str, text_siblings: list) -> EquationAnnotation:
 
     return annotation_llm.invoke([HumanMessage(content=prompt)])
 
+def get_context_for_image(img_metadata: dict, vector_store: Chroma) -> dict:
+    """
+    Retrieve text siblings. If sparse, also get sibling images on the same page.
+    Returns a context dict with all available material.
+    """
+    page_no = img_metadata['page_no']
+    
+    # Primary retrieval: text on same page
+    text_results = vector_store.get(
+        where={
+            "$and": [
+                {"page_no": {"$eq": page_no}},
+                {"type": {"$eq": "text"}}
+            ]
+        },
+        include=["documents", "metadatas"]
+    )
+    
+    text_siblings = [
+        (doc, meta) for doc, meta in 
+        zip(text_results["documents"], text_results["metadatas"])
+    ] if text_results["ids"] else []
+    
+    # If sparse text, also retrieve other images on same page for context
+    sibling_images = []
+    if len(text_siblings) < 2:  # threshold: fewer than 2 text chunks
+        image_results = vector_store.get(
+            where={
+                "$and": [
+                    {"page_no": {"$eq": page_no}},
+                    {"type": {"$eq": "image"}},
+                    {"source_path": {"$ne": img_metadata.get("source_path")}}  # exclude self
+                ]
+            },
+            include=["documents", "metadatas"],
+            limit=5
+        )
+        sibling_images = [
+            (doc, meta) for doc, meta in 
+            zip(image_results["documents"], image_results["metadatas"])
+        ] if image_results["ids"] else []
+    
+    return {
+        "text_siblings": text_siblings,
+        "image_siblings": sibling_images,
+        "page_no": page_no,
+    }
+
+def annotate_equation_with_fallback(latex: str, img_metadata: dict, vector_store: Chroma, annotation_llm) -> EquationAnnotation:
+    """
+    Annotate an equation. On text-sparse pages, supplement with image context.
+    """
+    context = get_context_for_image(img_metadata, vector_store)
+    
+    text_content = "\n\n".join(
+        clean_text_for_annotation(doc)
+        for doc, _ in context["text_siblings"]
+    )[:2000]
+    
+    # If we got sibling images, include their summaries as context
+    image_context = ""
+    if context["image_siblings"]:
+        image_summaries = "\n\n".join(
+            f"[Related figure on same page]: {doc[:500]}"
+            for doc, _ in context["image_siblings"]
+        )
+        image_context = "\n\n" + image_summaries
+    
+    combined_context = text_content + image_context
+    
+    prompt = SEMANTIC_ANNOTATION_PROMPT.format(
+        latex=latex,
+        page_text=combined_context[:3000] if combined_context else "[No text context available on this page]",
+    )
+    
+    return annotation_llm.invoke([HumanMessage(content=prompt)])
+
+def assess_latex_quality(latex: str) -> str:
+    """Rough quality check for pix2tex output."""
+    if latex.count("{") != latex.count("}"):
+        return "low"
+    if "\\!\\!" in latex or "\\mathrm{{" in latex:  # spacing hacks suggest OCR confusion
+        return "low"
+    if len(re.findall(r'\\[a-zA-Z]+', latex)) > 20:  # too many commands
+        return "low"
+    return "ok"
+
+def run_on_image(img_path:Path|str):
+    """
+    Run all steps one by one on a single image
+    """
+    img_record = get_image_record(img_path)
+    img_latex = img_record.get("latex",None)
+    img_metadata = vector_store.get(where={"source_path":{"$eq":str(img_path.absolute())}},include=["metadatas"])
+    img_metadata = img_metadata['metadatas'][0]
+    if img_latex == None or assess_latex_quality(img_latex) == "low":
+        raise Exception(f"Unable to annotate no latex info found for image {img_path} or the quality of the parsed image is low")
+    annotation = annotate_equation_with_fallback(img_latex,img_metadata,vector_store, annotation_llm)
+    return annotation
+
 if __name__ == "__main__":
     # Run on your 10 sample images
     sample_images = list(Path("extracted_images").glob("*.jpeg"))[:5]
 
     for img in sample_images:
-        logger.warning(f"processing {img.name}")
-        record = get_image_record(img)
-        logger.info(f"\n{'='*70}")
-        logger.info(f"Image: {record.get('img_path',None)}")
-        logger.info(f"Parent ID: {record.get('parent_id',None)}")
-        logger.info(f"\nLaTeX: {record.get('latex',None)}")
-        logger.info(f"Degenerate: {record.get('latex_degenerate',None)}")
-        logger.info(f"\nImage Summary (Layer 1):\n  {record.get('image_summary',None)}")
-        logger.warning(f"\nText Siblings ({len(record.get('text_siblings', []))} chunks):")
-        for sib in record.get('text_siblings', []):
-            logger.info(sib)
-        latex = record.get('latex',None)
-        text_siblings = record.get("text_siblings",[])
-        if latex != None and len(text_siblings) != 0:
-            annotated_result = annotate_equation(latex, text_siblings)
-            logger.info(f"{annotated_result=}")
-        else:
-            logger.info(f"no latex or text_sibling found, skipping for img {img.stem}")
+        try:
+            start = datetime.now()
+            annotation = run_on_image(img)
+            logger.info(f"{img.stem} took {datetime.now() - start}")
+            logger.info(annotation)
+        except Exception as ex:
+            logger.error(ex)
+
+    
+
+
