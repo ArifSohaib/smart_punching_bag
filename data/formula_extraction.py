@@ -10,6 +10,9 @@ import logging
 from typing import List, Optional, Literal
 from typing_extensions import TypedDict
 from datetime import datetime 
+from langchain_core.documents import Document 
+import json 
+import shutil 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -39,8 +42,8 @@ class EquationAnnotation(TypedDict):
         "general_math"
     ]
     python_signature_hint: Optional[str] 
-
-annotation_llm = ChatOllama(model="gemma4:e4b").with_structured_output(EquationAnnotation)
+MODEL_NAME = "gemma4:e4b"
+annotation_llm = ChatOllama(model=MODEL_NAME).with_structured_output(EquationAnnotation)
 
 SEMANTIC_ANNOTATION_PROMPT = """You are annotating a mathematical equation from a research paper.
 
@@ -74,6 +77,15 @@ embeddings = OllamaEmbeddings(model='embeddinggemma:300m')
 vector_store = Chroma(
     persist_directory=str(Path.cwd() / "chroma_db"),
     embedding_function=embeddings
+)
+LAYER2_DB = Path(Path.cwd() , f"chroma_db_layer2_{MODEL_NAME}")
+if LAYER2_DB.exists():
+    logger.warning(f"previous version of layer2 found. Deleting to refresh")
+    shutil.rmtree(LAYER2_DB)
+
+layer2_store = Chroma(
+    persist_directory=str(LAYER2_DB),
+    embedding_function=embeddings   # reuse the same embedding model as Layer 1
 )
 model = LatexOCR()
 
@@ -267,22 +279,61 @@ def assess_latex_quality(latex: str) -> str:
         return "low"
     return "ok"
 
+def store_annotation(annotation: EquationAnnotation,latex: str,latex_quality: str,img_metadata: dict,layer2_store: Chroma,):
+    # Build the searchable text (this is what gets embedded)
+    variable_text = "; ".join(
+        f"{v['symbol']}: {v['meaning']}"
+        for v in annotation.get("variables", [])
+    )
+    
+    searchable_text = (
+        f"{annotation['description']}\n"
+        f"Context: {annotation['biomechanical_context']}\n"
+        f"Variables: {variable_text}"
+    )
+    
+    layer2_store.add_documents([
+        Document(
+            page_content=searchable_text,
+            metadata={
+                "type": "annotated_equation",
+                "raw_latex": latex,
+                "latex_quality": latex_quality,
+                "equation_number": annotation.get("equation_number") or "",
+                "is_implementable": annotation.get("is_implementable", False),
+                "python_signature_hint": annotation.get("python_signature_hint") or "",
+                "biomechanical_context": annotation["biomechanical_context"],
+                "role_in_derivation": annotation.get("role_in_derivation") or "",
+                "variables_json": json.dumps(annotation.get("variables", [])),
+                "source_document": img_metadata["document"],
+                "source_page": img_metadata["page_no"],
+                "source_image_path": img_metadata["source_path"],
+                # Cross-reference back to Layer 1
+                "layer1_parent_id": img_metadata.get("parent_id", ""),
+            }
+        )
+    ])
+
 def run_on_image(img_path:Path|str):
     """
     Run all steps one by one on a single image
     """
     img_record = get_image_record(img_path)
     img_latex = img_record.get("latex",None)
+    img_latex_quality = assess_latex_quality(img_latex)
     img_metadata = vector_store.get(where={"source_path":{"$eq":str(img_path.absolute())}},include=["metadatas"])
     img_metadata = img_metadata['metadatas'][0]
-    if img_latex == None or assess_latex_quality(img_latex) == "low":
-        raise Exception(f"Unable to annotate no latex info found for image {img_path} or the quality of the parsed image is low")
+    if img_latex == None:
+        raise Exception(f"Unable to annotate no latex info found for image {img_path}")
     annotation = annotate_equation_with_fallback(img_latex,img_metadata,vector_store, annotation_llm)
+    store_annotation(annotation, img_latex, img_latex_quality, img_metadata, layer2_store)
     return annotation
 
+
+
+
 if __name__ == "__main__":
-    # Run on your 10 sample images
-    sample_images = list(Path("extracted_images").glob("*.jpeg"))[:5]
+    sample_images = list(Path("extracted_images").glob("*.jpeg"))
 
     for img in sample_images:
         try:
