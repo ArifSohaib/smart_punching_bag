@@ -13,6 +13,7 @@ from datetime import datetime
 from langchain_core.documents import Document 
 import json 
 import shutil 
+from tqdm import tqdm 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -32,14 +33,16 @@ class EquationAnnotation(TypedDict):
     description: str 
     equation_number: Optional[str]
     role_in_derivation: Optional[str]
+    is_implementable: bool 
     variables: List[Variable]
     biomechanical_context: Literal[
-        "imu_orientation",
-        "imu_state_estimation",
-        "rigid_body_kinematics",
-        "numerical_integration",
+        "impact_mechanics",
+        "energy_calculations", 
+        "motion_classification",
+        "feature_extraction",
+        "imu_kinematics",
         "math_property",
-        "general_math"
+        "general_math",
     ]
     python_signature_hint: Optional[str] 
 MODEL_NAME = "gemma4:e4b"
@@ -63,12 +66,13 @@ Fill in each field:
   identities, or equivalences (e.g., orthogonality conditions).
 - variables: list of every symbol with its meaning and unit (null if unitless)
 - biomechanical_context: pick ONE:
-    * imu_orientation       — attitude/quaternion tracking
-    * imu_state_estimation  — Kalman filters, ESKF, covariance updates
-    * rigid_body_kinematics — rigid body motion, angular velocity, frame transforms
-    * numerical_integration — ODE solvers, RK4, Euler methods
-    * math_property         — property, constraint, or identity
-    * general_math          — generic with no specific application
+    * impact_mechanics       — collisions, momentum exchange, force/impulse estimation
+    * energy_calculations    — kinetic/potential energy, work-energy theorem
+    * motion_classification  — ML-based activity/gesture recognition  
+    * feature_extraction     — time-series features from sensor data
+    * imu_kinematics         — orientation, integration, angular velocity
+    * math_property          — property, constraint, or identity (not implementable)
+    * general_math           — generic with no specific application
 - python_signature_hint: a function signature like
   "def quaternion_exp(q: np.ndarray) -> np.ndarray" if is_implementable is true, else null.
 """
@@ -116,13 +120,10 @@ def get_text_siblings(img_meta:dict, vector_store:Chroma):
     return list(zip(results["documents"], results["metadatas"]))
 
 def get_image_record(img_path: Path) -> dict:
-    """Pull everything Layer 2 would need for one image."""
-    # 1. Run pix2tex
     raw_latex = model(Image.open(img_path))
     cleaned = clean_pix2tex_output(raw_latex)
     degenerate = is_degenerate(cleaned)
     
-    # 2. Find the matching image doc in Chroma to get parent_id
     img_results = vector_store.get(
         where={"source_path": str(img_path.absolute())},
         include=["metadatas", "documents"]
@@ -133,43 +134,26 @@ def get_image_record(img_path: Path) -> dict:
     
     img_meta = img_results["metadatas"][0]
     img_summary = img_results["documents"][0]
-    parent_id = img_meta.get("parent_id")
-    img_page = int(img_meta.get('page_no',None))
-    if img_page == None:
-        logger.error(f"image page not found {img_meta=}")
-        
+    img_page = int(img_meta["page_no"])
     
-    # 3. Pull text siblings — chunks with the same parent_id (same page)
-    text_siblings = vector_store.get(
+    text_results = vector_store.get(
         where={
             "$and": [
                 {"page_no": {"$eq": img_page}},
-                {"type": {"$eq": "text"}}
+                {"type": {"$eq": "text"}},
             ]
         },
         include=["documents", "metadatas"]
     )
+    text_siblings = list(zip(text_results["documents"], text_results["metadatas"]))
     
-    text_section = vector_store.get(where={"$and":[{"section_h1":{"$eq":text_siblings['metadatas'][0]['section_h1']}},
-                                                  {"section_h2":{"$eq":text_siblings['metadatas'][0]['section_h2']}},
-                                                  {"section_h3":{'$eq':text_siblings['metadatas'][0]['section_h3']}},
-                                                  {"type": {"$eq": "text"}},
-                                                  {"page_no": {"$eq": img_page-1}},
-                                                  {"page_no": {"$eq": img_page}},
-                                                  {"page_no": {"$eq": img_page+1}},
-                                                  ]},
-                                                  include=['documents','metadatas'])
-    text_siblings = list(zip(text_siblings['documents'], text_siblings['metadatas']))
-    logging.info("*"*10)
-    logging.info(f"{text_section=}")
-    logging.info("*"*10)
     return {
         "img_path": img_path.name,
-        "parent_id": parent_id,
+        "parent_id": img_meta.get("parent_id"),
         "latex": cleaned,
         "latex_degenerate": degenerate,
         "image_summary": img_summary[:400],
-        "text_siblings": text_siblings
+        "text_siblings": text_siblings,
     }
 
 def clean_text_for_annotation(text: str) -> str:
@@ -314,18 +298,28 @@ def store_annotation(annotation: EquationAnnotation,latex: str,latex_quality: st
         )
     ])
 
-def run_on_image(img_path:Path|str):
-    """
-    Run all steps one by one on a single image
-    """
+def run_on_image(img_path: Path | str):
     img_record = get_image_record(img_path)
-    img_latex = img_record.get("latex",None)
+    img_latex = img_record.get("latex")
+    
+    if img_latex is None or img_record.get("latex_degenerate"):
+        logger.info(f"Skipping {img_path.name}: degenerate or missing LaTeX")
+        return None
+    
     img_latex_quality = assess_latex_quality(img_latex)
-    img_metadata = vector_store.get(where={"source_path":{"$eq":str(img_path.absolute())}},include=["metadatas"])
-    img_metadata = img_metadata['metadatas'][0]
-    if img_latex == None:
-        raise Exception(f"Unable to annotate no latex info found for image {img_path}")
-    annotation = annotate_equation_with_fallback(img_latex,img_metadata,vector_store, annotation_llm)
+    if img_latex_quality == "low":
+        logger.info(f"Skipping {img_path.name}: low quality LaTeX")
+        return None
+    
+    img_metadata_results = vector_store.get(
+        where={"source_path": {"$eq": str(img_path.absolute())}},
+        include=["metadatas"]
+    )
+    img_metadata = img_metadata_results["metadatas"][0]
+    
+    annotation = annotate_equation_with_fallback(
+        img_latex, img_metadata, vector_store, annotation_llm
+    )
     store_annotation(annotation, img_latex, img_latex_quality, img_metadata, layer2_store)
     return annotation
 
@@ -335,12 +329,12 @@ def run_on_image(img_path:Path|str):
 if __name__ == "__main__":
     sample_images = list(Path("extracted_images").glob("*.jpeg"))
 
-    for img in sample_images:
+    for img in tqdm(sample_images):
         try:
             start = datetime.now()
             annotation = run_on_image(img)
-            logger.info(f"{img.stem} took {datetime.now() - start}")
-            logger.info(annotation)
+            #logger.info(f"{img.stem} took {datetime.now() - start}")
+            #logger.info(annotation)
         except Exception as ex:
             logger.error(ex)
 

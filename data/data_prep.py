@@ -55,15 +55,17 @@ text_splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=100
 )
 
+def normalize_doc_name(name: str) -> str:
+    """Deterministic document name: only alphanumerics and underscores."""
+    return re.sub(r'[^a-zA-Z0-9]+', '_', name).strip('_')
 
-def get_img_page_and_no(img_path:str | Path):
-    if isinstance(img_path, Path):
-        name_parts = img_path.name.split('.pdf')
-    else:
-        name_parts = img_path.split('.pdf')
-    source_file = name_parts[0]
+
+def get_img_page_and_no(img_path: str | Path):
+    p = Path(img_path) if isinstance(img_path, str) else img_path
+    name_parts = p.name.split('.pdf')
+    source_file = normalize_doc_name(name_parts[0])   
     img_page_and_no = name_parts[1].split('-')
-    page_no = img_page_and_no[1]
+    page_no = int(img_page_and_no[1])                  
     image_no = img_page_and_no[2].split('.')[0]
     return source_file, page_no, image_no
 
@@ -174,7 +176,7 @@ def process_document(
     vector_store: Chroma,
     batch_size: int = 64):
 
-    doc_name = doc_path.stem
+    doc_name = normalize_doc_name(doc_path.stem)
     page_chunks = pymupdf4llm.to_markdown(
         str(doc_path),
         page_chunks=True,
@@ -188,7 +190,7 @@ def process_document(
     buffer: list[Document] = []
 
     for page_data in page_chunks:
-        page_num = page_data["metadata"]["page_number"]
+        page_num = int(page_data["metadata"]["page_number"]) 
         page_id = f"{doc_name}_p{page_num}"
         page_text = page_data["text"]
 
