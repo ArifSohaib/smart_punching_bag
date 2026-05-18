@@ -20,6 +20,7 @@ dependencies = [
     "ollama>=0.6.2",
     "tqdm>=4.66.5",
     "pix2tex>=0.1.4",
+    "fastapi[standard]>=0.136.1",
 ]
 
 [tool.uv.sources]
