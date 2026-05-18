@@ -79,10 +79,10 @@ Fill in each field:
 
 embeddings = OllamaEmbeddings(model='embeddinggemma:300m')
 vector_store = Chroma(
-    persist_directory=str(Path.cwd() / "chroma_db"),
+    persist_directory=str(Path.cwd(),"data","chroma_db"),
     embedding_function=embeddings
 )
-LAYER2_DB = Path(Path.cwd() , f"chroma_db_layer2_{MODEL_NAME}")
+LAYER2_DB = Path(Path.cwd() , "data", f"chroma_db_layer2_{MODEL_NAME}")
 if LAYER2_DB.exists():
     logger.warning(f"previous version of layer2 found. Deleting to refresh")
     shutil.rmtree(LAYER2_DB)
@@ -327,14 +327,12 @@ def run_on_image(img_path: Path | str):
 
 
 if __name__ == "__main__":
-    sample_images = list(Path("extracted_images").glob("*.jpeg"))
+    sample_images = list(Path("data","extracted_images").glob("*.jpeg"))
 
     for img in tqdm(sample_images):
         try:
             start = datetime.now()
             annotation = run_on_image(img)
-            #logger.info(f"{img.stem} took {datetime.now() - start}")
-            #logger.info(annotation)
         except Exception as ex:
             logger.error(ex)
 

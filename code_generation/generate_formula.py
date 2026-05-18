@@ -20,8 +20,8 @@ formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(filena
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 logger.propagate = False 
-
-LAYER2_DB = Path(Path.cwd(),"chroma_db_layer2_gemma4:e4b")
+LAYER2_EMBED_MODEL = "gemma4:e4b"
+LAYER2_DB = Path(Path.cwd(),"data", f"chroma_db_layer2_{LAYER2_EMBED_MODEL}")
 embeddings = OllamaEmbeddings(model='embeddinggemma:300m')
 layer2_store = Chroma(persist_directory=str(LAYER2_DB), embedding_function=embeddings)
 

@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(name)s - %(filename)s: %(message)s")
 
 logger = logging.getLogger(__name__)
-chroma_path = Path.cwd()
+chroma_path = Path(Path.cwd(),"data")
 chroma_file = "chroma_db"
 
 
@@ -40,11 +40,11 @@ def flush(buffer: list[Document]):
         vector_store.add_documents(buffer)
         buffer.clear()
 
-images_dir = Path(Path.cwd(), "extracted_images")
+images_dir = Path(Path.cwd(), "data", "extracted_images")
 if not images_dir.exists():
     images_dir.mkdir(parents=True)
 
-pdf_dir = Path(Path.cwd(),"papers_and_books")
+pdf_dir = Path(Path.cwd(),"data", "papers_and_books")
 
 gemma_model = "gemma4:e4b" 
 
