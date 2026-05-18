@@ -25,6 +25,29 @@ LAYER2_DB = Path(Path.cwd(),"chroma_db_layer2_gemma4:e4b")
 embeddings = OllamaEmbeddings(model='embeddinggemma:300m')
 layer2_store = Chroma(persist_directory=str(LAYER2_DB), embedding_function=embeddings)
 
+
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+CODE_GEN_SYSTEM_PROMPT = """<|think|>You are a code generation assistant specializing in 
+biomechanics and motion analysis. You write Python implementations of mathematical 
+formulas from research papers.
+
+WORKFLOW (you MUST follow this):
+1. First, call retrieve_implementable_formulas with a description of what the user needs.
+2. Examine the retrieved formulas. Each has: LaTeX, description, variables, suggested signature.
+3. If retrieved formulas don't match the request, retrieve again with a refined query 
+   before answering. Do NOT generate code from your own knowledge.
+4. Write Python using NumPy. Implement the formula EXACTLY as the LaTeX shows.
+5. Cite the source equation number and paper in code comments.
+
+CRITICAL RULES:
+- If no implementable formula is retrieved, say so. Do not fabricate.
+- If the LaTeX looks garbled or ambiguous, flag this in your response.
+- Add docstrings stating the source equation.
+"""
+
+
 @tool 
 def retrieve_implementable_formulas(query: str, k: int = 4) -> str:
     """Retrieve formulas that can be implemented as Python functions, relevant to the query.
@@ -64,36 +87,14 @@ def retrieve_implementable_formulas(query: str, k: int = 4) -> str:
     return "\n\n".join(results)
 
 
-
-class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], add_messages]
-
-CODE_GEN_SYSTEM_PROMPT = """<|think|>You are a code generation assistant specializing in 
-biomechanics and motion analysis. You write Python implementations of mathematical 
-formulas from research papers.
-
-WORKFLOW (you MUST follow this):
-1. First, call retrieve_implementable_formulas with a description of what the user needs.
-2. Examine the retrieved formulas. Each has: LaTeX, description, variables, suggested signature.
-3. If retrieved formulas don't match the request, retrieve again with a refined query 
-   before answering. Do NOT generate code from your own knowledge.
-4. Write Python using NumPy. Implement the formula EXACTLY as the LaTeX shows.
-5. Cite the source equation number and paper in code comments.
-
-CRITICAL RULES:
-- If no implementable formula is retrieved, say so. Do not fabricate.
-- If the LaTeX looks garbled or ambiguous, flag this in your response.
-- Add docstrings stating the source equation.
-"""
-
-
-def code_gen_agent(state: AgentState):
-    messages = list(state["messages"])
-    if not any(isinstance(m, SystemMessage) for m in messages):
-        messages = [SystemMessage(content=CODE_GEN_SYSTEM_PROMPT)] + messages
-    response = code_gen_model.invoke(messages)
-    return {"messages": [response]}
-
+def get_code_gen_agent_with_model(code_gen_model):
+    def code_gen_agent(state: AgentState):
+        messages = list(state["messages"])
+        if not any(isinstance(m, SystemMessage) for m in messages):
+            messages = [SystemMessage(content=CODE_GEN_SYSTEM_PROMPT)] + messages
+        response = code_gen_model.invoke(messages)
+        return {"messages": [response]}
+    return code_gen_agent
 
 def should_continue_code_gen(state: AgentState):
     last = state["messages"][-1]
@@ -101,71 +102,28 @@ def should_continue_code_gen(state: AgentState):
         return "tools"
     return END
 
-class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+def create_code_gen_agent(tools, gemma_model="gemma4:e4b"):
+    code_gen_model = ChatOllama(model=gemma_model).bind_tools(tools)
+    code_gen_agent = get_code_gen_agent_with_model(code_gen_model)
+    code_gen_workflow = StateGraph(AgentState)
+    code_gen_workflow.add_node("agent", code_gen_agent)
+    code_gen_workflow.add_node("tools", ToolNode(tools))
+    code_gen_workflow.add_edge(START, "agent")
+    code_gen_workflow.add_conditional_edges("agent", should_continue_code_gen)
+    code_gen_workflow.add_edge("tools", "agent")
+
+    code_gen_app = code_gen_workflow.compile(checkpointer=MemorySaver())
+    return code_gen_app
 
 
-
-filtered_retriever = layer2_store.as_retriever(
-        search_kwargs={
-            "k": 5,
-            "filter": {
-                "$and": [
-                    {"type": {"$eq": "annotated_equation"}},
-                    {"is_implementable": {"$eq": True}},
-                    {"latex_quality": {"$ne": "low"}},  # skip garbled OCR
-                ]
-            }
-        }
+if __name__ == "__main__":
+    code_gen_tools = [retrieve_implementable_formulas]
+    code_gen_app = create_code_gen_agent(code_gen_tools)
+    config = {"configurable": {"thread_id": "codegen_1"}}
+    query = input("Hello I am an agent to generate code based on your questions and my provided papers/books. Please input a query:\n")
+    result = code_gen_app.invoke(
+        {"messages": [HumanMessage(content=query)]},
+        config=config
     )
-
-simple_retriever = layer2_store.as_retriever()
-
-
-# query = "Write a function to calcaulate the average force of punches over a given time period"
-query = "How do I classify a punch from time-series IMU data using a learned model?"
-
-simple_retrieved_docs = simple_retriever.invoke(query)
-filtered_retrieved_docs = filtered_retriever.invoke(query)
-
-logger.info(f"simple retrieved docs = {len(simple_retrieved_docs)}")
-logger.info(f"filtered retrieved docs = {len(filtered_retrieved_docs)}")
-
-for doc in simple_retrieved_docs:
-    logger.info(f"{doc.metadata}\n")
-
-for doc in filtered_retrieved_docs:
-    logger.info(f"{doc.metadata}\n")
-
-layer2_data = layer2_store.get(
-    where={"type": "annotated_equation"},
-    limit=20,
-    include=["metadatas", "documents"]
-)
-
-for m in layer2_data["metadatas"]:
-    logger.info(f"impl={m['is_implementable']} | qual={m['latex_quality']} | latex={m['raw_latex'][:100]}")
-
-
-
-
-code_gen_tools = [retrieve_implementable_formulas]
-code_gen_model = ChatOllama(model="gemma4:26b").bind_tools(code_gen_tools)
-
-
-
-code_gen_workflow = StateGraph(AgentState)
-code_gen_workflow.add_node("agent", code_gen_agent)
-code_gen_workflow.add_node("tools", ToolNode(code_gen_tools))
-code_gen_workflow.add_edge(START, "agent")
-code_gen_workflow.add_conditional_edges("agent", should_continue_code_gen)
-code_gen_workflow.add_edge("tools", "agent")
-
-code_gen_app = code_gen_workflow.compile(checkpointer=MemorySaver())
-
-config = {"configurable": {"thread_id": "codegen_1"}}
-result = code_gen_app.invoke(
-    {"messages": [HumanMessage(content=query)]},
-    config=config
-)
-logger.info(result["messages"][-1].content)
+    logger.info(result["messages"][-1].content)
