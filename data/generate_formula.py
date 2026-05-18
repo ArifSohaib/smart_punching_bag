@@ -11,6 +11,16 @@ from langchain.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from typing import Annotated, Sequence, TypedDict
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+ch = logging.StreamHandler()
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(filename)s: %(message)s")
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+logger.propagate = False 
+
 LAYER2_DB = Path(Path.cwd(),"chroma_db_layer2_gemma4:e4b")
 embeddings = OllamaEmbeddings(model='embeddinggemma:300m')
 layer2_store = Chroma(persist_directory=str(LAYER2_DB), embedding_function=embeddings)
@@ -58,7 +68,7 @@ def retrieve_implementable_formulas(query: str, k: int = 4) -> str:
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
-CODE_GEN_SYSTEM_PROMPT = """You are a code generation assistant specializing in 
+CODE_GEN_SYSTEM_PROMPT = """<|think|>You are a code generation assistant specializing in 
 biomechanics and motion analysis. You write Python implementations of mathematical 
 formulas from research papers.
 
@@ -112,19 +122,20 @@ filtered_retriever = layer2_store.as_retriever(
 simple_retriever = layer2_store.as_retriever()
 
 
-query = "Write a function to calcaulate the average force of punches over a given time period"
+# query = "Write a function to calcaulate the average force of punches over a given time period"
+query = "How do I classify a punch from time-series IMU data using a learned model?"
 
 simple_retrieved_docs = simple_retriever.invoke(query)
 filtered_retrieved_docs = filtered_retriever.invoke(query)
 
-print(f"simple retrieved docs = {len(simple_retrieved_docs)}")
-print(f"filtered retrieved docs = {len(filtered_retrieved_docs)}")
+logger.info(f"simple retrieved docs = {len(simple_retrieved_docs)}")
+logger.info(f"filtered retrieved docs = {len(filtered_retrieved_docs)}")
 
 for doc in simple_retrieved_docs:
-    print(f"{doc.metadata}\n")
+    logger.info(f"{doc.metadata}\n")
 
 for doc in filtered_retrieved_docs:
-    print(f"{doc.metadata}\n")
+    logger.info(f"{doc.metadata}\n")
 
 layer2_data = layer2_store.get(
     where={"type": "annotated_equation"},
@@ -133,13 +144,13 @@ layer2_data = layer2_store.get(
 )
 
 for m in layer2_data["metadatas"]:
-    print(f"impl={m['is_implementable']} | qual={m['latex_quality']} | latex={m['raw_latex'][:100]}")
+    logger.info(f"impl={m['is_implementable']} | qual={m['latex_quality']} | latex={m['raw_latex'][:100]}")
 
 
 
 
 code_gen_tools = [retrieve_implementable_formulas]
-code_gen_model = ChatOllama(model="gemma4:e4b").bind_tools(code_gen_tools)
+code_gen_model = ChatOllama(model="gemma4:26b").bind_tools(code_gen_tools)
 
 
 
@@ -157,4 +168,4 @@ result = code_gen_app.invoke(
     {"messages": [HumanMessage(content=query)]},
     config=config
 )
-print(result["messages"][-1].content)
+logger.info(result["messages"][-1].content)
