@@ -119,7 +119,12 @@ def create_code_gen_agent(tools, gemma_model="gemma4:e4b"):
 
 if __name__ == "__main__":
     code_gen_tools = [retrieve_implementable_formulas]
-    code_gen_app = create_code_gen_agent(code_gen_tools)
+    model_size = input("do you want to use the large model")
+    if model_size.lower() == "y" or "yes":
+        gemma_model = "gemma4:26b"
+    else:
+        gemma_model = "gemma4:e4b"
+    code_gen_app = create_code_gen_agent(code_gen_tools, gemma_model)
     config = {"configurable": {"thread_id": "codegen_1"}}
     query = input("Hello I am an agent to generate code based on your questions and my provided papers/books. Please input a query:\n")
     result = code_gen_app.invoke(
