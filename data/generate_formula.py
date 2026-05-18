@@ -119,7 +119,7 @@ def create_code_gen_agent(tools, gemma_model="gemma4:e4b"):
 
 if __name__ == "__main__":
     code_gen_tools = [retrieve_implementable_formulas]
-    model_size = input("do you want to use the large model")
+    model_size = input("do you want to use the large model:\n")
     if model_size.lower() == "y" or "yes":
         gemma_model = "gemma4:26b"
     else:
