@@ -4,7 +4,7 @@ Smart punching bag using gemma4 local llm with Ollama
 
 
 ### Environment Setup
-install all the requirements using the [pyproject.toml](`pyproject.toml`)
+install all the requirements using the [pyproject.toml](pyproject.toml)
 Use `uv sync` in the folder to do the install
 You may need to also install tessaract for ocr
 
