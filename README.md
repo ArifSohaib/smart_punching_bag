@@ -12,7 +12,8 @@ Project has been tested on 32 GB RAM and AMD 7900 GRE 16 GB VRAM and AMD 9700x C
 
 
 ### Putting the IMU code on Arduino Nano
-Use the Arduino IDE (either application or web version) to upload the code to an Arduino Nano 33 BLE Sense
+Use the Arduino IDE (either application or web version) to upload the code to an Arduino Nano 33 BLE Sense.
+Upload the file [arduino/send_sensor_data_ble.ino](arduino/send_sensor_data_ble.ino)
 
 You don't need an actual punching bag, shaking the arduino will produce some results suitable for testing. 
 
